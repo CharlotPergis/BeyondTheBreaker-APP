@@ -7,12 +7,10 @@ import 'package:google_fonts/google_fonts.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
   await Supabase.initialize(
     url: 'https://qkniqwgcwvxkgjciccad.supabase.co',
     anonKey: 'sb_publishable_pzHW1LlymSCVL876qchBKw_pPY0xN-2',
   );
-
   runApp(const MyApp());
 }
 
@@ -23,15 +21,13 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Beyond The Breaker',
+      title: 'Beyond The Bre4ker',
       theme: ThemeData(
         brightness: Brightness.dark,
-        primaryColor: const Color(0xFF0EA5E9),
-        scaffoldBackgroundColor: const Color(0xFF0F172A),
+        primaryColor: const Color(0xFF5E9BFF),
+        scaffoldBackgroundColor: const Color(0xFF0A0E27),
         useMaterial3: true,
-        textTheme: GoogleFonts.poppinsTextTheme(
-          ThemeData.dark().textTheme,
-        ),
+        textTheme: GoogleFonts.interTextTheme(ThemeData.dark().textTheme),
       ),
       home: const Dashboard(),
     );
@@ -46,6 +42,7 @@ class HistoryEntry {
   final double hotspotProb;
   final double overloadProb;
   final double compositeRisk;
+  final String recommendedAction;
 
   HistoryEntry({
     required this.timestamp,
@@ -55,6 +52,7 @@ class HistoryEntry {
     this.hotspotProb = 0,
     this.overloadProb = 0,
     this.compositeRisk = 0,
+    this.recommendedAction = '',
   });
 }
 
@@ -66,28 +64,16 @@ class Dashboard extends StatefulWidget {
 }
 
 class _DashboardState extends State<Dashboard> {
-  double temperature = 0;
-  double current = 0;
-  String status = "Normal";
-  double hotspotProb = 0;
-  double overloadProb = 0;
-  double compositeRisk = 0;
-  
+  // Data
+  double temperature = 0, current = 0, hotspotProb = 0, overloadProb = 0, compositeRisk = 0;
+  String status = "Normal", recommendedAction = "System operating normally";
   List<HistoryEntry> historyLog = [];
-  List<FlSpot> tempSpots = [];
-  List<FlSpot> currentSpots = [];
-  List<FlSpot> hotspotSpots = [];
-  List<FlSpot> overloadSpots = [];
-  List<FlSpot> riskSpots = [];
+  List<FlSpot> tempSpots = [], currentSpots = [], hotspotSpots = [], overloadSpots = [], riskSpots = [];
   int dataPointIndex = 0;
   String _selectedMetric = 'All';
   
-  RealtimeChannel? _channel;
+  Timer? _pollingTimer;
   bool isConnected = false;
-  bool isRealtimeWorking = false;
-  Timer? _fallbackTimer;
-  final RefreshIndicatorKey = GlobalKey<RefreshIndicatorState>();
-
   final List<String> metrics = ['All', 'Temperature', 'Current', 'Hotspot', 'Overload', 'Risk'];
 
   @override
@@ -99,67 +85,33 @@ class _DashboardState extends State<Dashboard> {
   Future<void> _connectToSupabase() async {
     try {
       await _fetchHistoricalData();
-      await _startRealtimeSubscription();
-      
-      Future.delayed(const Duration(seconds: 5), () {
-        if (!isRealtimeWorking && mounted) {
-          print('⚠️ Realtime not working, starting fallback polling');
-          _startFallbackPolling();
-        }
-      });
-      
+      _startPolling();
       setState(() => isConnected = true);
-      print('✅ Connected to Supabase');
     } catch (e) {
-      print('❌ Connection error: $e');
       setState(() => isConnected = false);
-      _startFallbackPolling();
+      _startDemoData();
     }
   }
 
-  Future<void> _startRealtimeSubscription() async {
-    final supabase = Supabase.instance.client;
-    
-    _channel = supabase
-        .channel('breaker_realtime')
-        .onPostgresChanges(
-          event: PostgresChangeEvent.insert,
-          schema: 'public',
-          table: 'breaker_readings',
-          callback: (payload) {
-            isRealtimeWorking = true;
-            _onNewData(payload.newRecord);
-          },
-        )
-        .subscribe((status, error) {
-          if (error == null && mounted) {
-            print('✅ Realtime connected');
-            isRealtimeWorking = true;
-          } else if (error != null) {
-            print('❌ Realtime error: $error');
-            isRealtimeWorking = false;
-          }
-        });
-  }
-
-  void _startFallbackPolling() {
-    _fallbackTimer?.cancel();
-    _fallbackTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+  void _startPolling() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
       if (!mounted) return;
-      
       try {
         final response = await Supabase.instance.client
             .from('breaker_readings')
             .select()
             .order('created_at', ascending: false)
             .limit(1);
-        
-        if (response.isNotEmpty && mounted) {
-          _onNewData(response.first);
-        }
-      } catch (e) {
-        _generateDemoData();
-      }
+        if (response.isNotEmpty && mounted) _onNewData(response.first);
+      } catch (e) {}
+    });
+  }
+
+  void _startDemoData() {
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (mounted) _generateDemoData();
     });
   }
 
@@ -167,28 +119,18 @@ class _DashboardState extends State<Dashboard> {
     try {
       final newTemp = (data['temperature_c'] ?? 0).toDouble();
       final newCurrent = (data['current_a'] ?? 0).toDouble();
-      
-      String newStatus = (data['breaker_state'] ?? 'Normal').toString();
-      if (newStatus.toLowerCase() == 'normal') newStatus = 'Normal';
-      else if (newStatus.toLowerCase() == 'overload') newStatus = 'Overload';
-      else if (newStatus.toLowerCase() == 'warning') newStatus = 'Warning';
-      else if (newStatus.toLowerCase() == 'overheating') newStatus = 'Overheating';
-      
-      final newHotspot = (data['hotspot_probability'] ?? 0).toDouble();
-      final newOverload = (data['overload_probability'] ?? 0).toDouble();
-      final newRisk = (data['composite_risk'] ?? 0).toDouble();
-      
-      if (!mounted) return;
+      String newStatus = _normalizeStatus(data['breaker_state'] ?? 'Normal');
       
       setState(() {
         temperature = newTemp;
         current = newCurrent;
         status = newStatus;
-        hotspotProb = newHotspot;
-        overloadProb = newOverload;
-        compositeRisk = newRisk;
+        hotspotProb = (data['hotspot_probability'] ?? 0).toDouble();
+        overloadProb = (data['overload_probability'] ?? 0).toDouble();
+        compositeRisk = (data['composite_risk'] ?? 0).toDouble();
+        recommendedAction = (data['recommended_action'] ?? 'System operating normally').toString();
         
-        final newEntry = HistoryEntry(
+        _addHistoryEntry(HistoryEntry(
           timestamp: DateTime.now(),
           temperature: temperature,
           current: current,
@@ -196,65 +138,37 @@ class _DashboardState extends State<Dashboard> {
           hotspotProb: hotspotProb,
           overloadProb: overloadProb,
           compositeRisk: compositeRisk,
-        );
-        historyLog.insert(0, newEntry);
-        if (historyLog.length > 100) historyLog.removeLast();
-        
-        dataPointIndex++;
-        
-        double scaledTemp = (temperature / 100).clamp(0, 1);
-        double scaledCurrent = (current / 100).clamp(0, 1);
-        
-        tempSpots.add(FlSpot(dataPointIndex.toDouble(), scaledTemp));
-        currentSpots.add(FlSpot(dataPointIndex.toDouble(), scaledCurrent));
-        hotspotSpots.add(FlSpot(dataPointIndex.toDouble(), hotspotProb));
-        overloadSpots.add(FlSpot(dataPointIndex.toDouble(), overloadProb));
-        riskSpots.add(FlSpot(dataPointIndex.toDouble(), compositeRisk));
-        
-        if (tempSpots.length > 50) {
-          tempSpots.removeAt(0);
-          currentSpots.removeAt(0);
-          hotspotSpots.removeAt(0);
-          overloadSpots.removeAt(0);
-          riskSpots.removeAt(0);
-        }
+          recommendedAction: recommendedAction,
+        ));
       });
-    } catch (e) {
-      print('Error processing data: $e');
-    }
+    } catch (e) {}
   }
 
   void _generateDemoData() {
-    if (!mounted) return;
-    
     final rand = DateTime.now().millisecondsSinceEpoch % 100;
     setState(() {
       temperature = 25 + (rand % 50).toDouble();
       current = 15 + (rand % 40).toDouble();
       
       if (temperature > 75 || current > 45) {
-        status = "Overheating";
-        hotspotProb = 0.85;
-        overloadProb = 0.75;
-        compositeRisk = 0.80;
+        status = "Critical";
+        hotspotProb = 0.85; overloadProb = 0.75; compositeRisk = 0.80;
+        recommendedAction = "⚠️ CRITICAL: Isolate circuit immediately! Severe overheating detected.";
       } else if (temperature > 60 || current > 35) {
         status = "Overload";
-        hotspotProb = 0.65;
-        overloadProb = 0.70;
-        compositeRisk = 0.675;
+        hotspotProb = 0.65; overloadProb = 0.70; compositeRisk = 0.675;
+        recommendedAction = "⚠️ WARNING: Reduce load by 15-20% immediately!";
       } else if (temperature > 50 || current > 28) {
         status = "Warning";
-        hotspotProb = 0.45;
-        overloadProb = 0.50;
-        compositeRisk = 0.475;
+        hotspotProb = 0.45; overloadProb = 0.50; compositeRisk = 0.475;
+        recommendedAction = "⚠️ Monitor system: Elevated temperature/current detected.";
       } else {
         status = "Normal";
-        hotspotProb = 0.15;
-        overloadProb = 0.20;
-        compositeRisk = 0.175;
+        hotspotProb = 0.15; overloadProb = 0.20; compositeRisk = 0.175;
+        recommendedAction = "✅ System operating normally. All parameters within safe range.";
       }
       
-      final newEntry = HistoryEntry(
+      _addHistoryEntry(HistoryEntry(
         timestamp: DateTime.now(),
         temperature: temperature,
         current: current,
@@ -262,29 +176,38 @@ class _DashboardState extends State<Dashboard> {
         hotspotProb: hotspotProb,
         overloadProb: overloadProb,
         compositeRisk: compositeRisk,
-      );
-      historyLog.insert(0, newEntry);
-      if (historyLog.length > 100) historyLog.removeLast();
-      
-      dataPointIndex++;
-      
-      double scaledTemp = (temperature / 100).clamp(0, 1);
-      double scaledCurrent = (current / 100).clamp(0, 1);
-      
-      tempSpots.add(FlSpot(dataPointIndex.toDouble(), scaledTemp));
-      currentSpots.add(FlSpot(dataPointIndex.toDouble(), scaledCurrent));
-      hotspotSpots.add(FlSpot(dataPointIndex.toDouble(), hotspotProb));
-      overloadSpots.add(FlSpot(dataPointIndex.toDouble(), overloadProb));
-      riskSpots.add(FlSpot(dataPointIndex.toDouble(), compositeRisk));
-      
-      if (tempSpots.length > 50) {
-        tempSpots.removeAt(0);
-        currentSpots.removeAt(0);
-        hotspotSpots.removeAt(0);
-        overloadSpots.removeAt(0);
-        riskSpots.removeAt(0);
-      }
+        recommendedAction: recommendedAction,
+      ));
     });
+  }
+
+  void _addHistoryEntry(HistoryEntry entry) {
+    historyLog.insert(0, entry);
+    if (historyLog.length > 100) historyLog.removeLast();
+    
+    dataPointIndex++;
+    tempSpots.add(FlSpot(dataPointIndex.toDouble(), (temperature / 100).clamp(0, 1)));
+    currentSpots.add(FlSpot(dataPointIndex.toDouble(), (current / 100).clamp(0, 1)));
+    hotspotSpots.add(FlSpot(dataPointIndex.toDouble(), hotspotProb));
+    overloadSpots.add(FlSpot(dataPointIndex.toDouble(), overloadProb));
+    riskSpots.add(FlSpot(dataPointIndex.toDouble(), compositeRisk));
+    
+    if (tempSpots.length > 50) {
+      tempSpots.removeAt(0);
+      currentSpots.removeAt(0);
+      hotspotSpots.removeAt(0);
+      overloadSpots.removeAt(0);
+      riskSpots.removeAt(0);
+    }
+  }
+
+  String _normalizeStatus(String raw) {
+    final lower = raw.toLowerCase();
+    if (lower == 'normal') return 'Normal';
+    if (lower == 'overload') return 'Overload';
+    if (lower == 'warning') return 'Warning';
+    if (lower == 'critical' || lower == 'overheating') return 'Critical';
+    return 'Normal';
   }
 
   Future<void> _fetchHistoricalData() async {
@@ -296,36 +219,31 @@ class _DashboardState extends State<Dashboard> {
           .limit(100);
       
       if (response.isNotEmpty && mounted) {
-        final entries = <HistoryEntry>[];
-        
-        for (var i = response.length - 1; i >= 0; i--) {
-          final item = response[i];
-          entries.add(HistoryEntry(
-            timestamp: DateTime.parse(item['created_at']),
-            temperature: (item['temperature_c'] ?? 0).toDouble(),
-            current: (item['current_a'] ?? 0).toDouble(),
-            status: (item['breaker_state'] ?? 'Normal').toString(),
-            hotspotProb: (item['hotspot_probability'] ?? 0).toDouble(),
-            overloadProb: (item['overload_probability'] ?? 0).toDouble(),
-            compositeRisk: (item['composite_risk'] ?? 0).toDouble(),
-          ));
-        }
-        
         setState(() {
-          historyLog = entries.reversed.toList();
-          
+          historyLog.clear();
           tempSpots.clear();
           currentSpots.clear();
           hotspotSpots.clear();
           overloadSpots.clear();
           riskSpots.clear();
           
+          for (int i = response.length - 1; i >= 0; i--) {
+            final item = response[i];
+            historyLog.add(HistoryEntry(
+              timestamp: DateTime.parse(item['created_at']),
+              temperature: (item['temperature_c'] ?? 0).toDouble(),
+              current: (item['current_a'] ?? 0).toDouble(),
+              status: _normalizeStatus(item['breaker_state'] ?? 'Normal'),
+              hotspotProb: (item['hotspot_probability'] ?? 0).toDouble(),
+              overloadProb: (item['overload_probability'] ?? 0).toDouble(),
+              compositeRisk: (item['composite_risk'] ?? 0).toDouble(),
+              recommendedAction: (item['recommended_action'] ?? 'System operating normally').toString(),
+            ));
+          }
+          
           for (int i = 0; i < historyLog.length; i++) {
-            double scaledTemp = (historyLog[i].temperature / 100).clamp(0, 1);
-            double scaledCurrent = (historyLog[i].current / 100).clamp(0, 1);
-            
-            tempSpots.add(FlSpot(i.toDouble(), scaledTemp));
-            currentSpots.add(FlSpot(i.toDouble(), scaledCurrent));
+            tempSpots.add(FlSpot(i.toDouble(), (historyLog[i].temperature / 100).clamp(0, 1)));
+            currentSpots.add(FlSpot(i.toDouble(), (historyLog[i].current / 100).clamp(0, 1)));
             hotspotSpots.add(FlSpot(i.toDouble(), historyLog[i].hotspotProb));
             overloadSpots.add(FlSpot(i.toDouble(), historyLog[i].overloadProb));
             riskSpots.add(FlSpot(i.toDouble(), historyLog[i].compositeRisk));
@@ -336,237 +254,160 @@ class _DashboardState extends State<Dashboard> {
             final latest = response[0];
             temperature = (latest['temperature_c'] ?? 0).toDouble();
             current = (latest['current_a'] ?? 0).toDouble();
-            status = (latest['breaker_state'] ?? 'Normal').toString();
+            status = _normalizeStatus(latest['breaker_state'] ?? 'Normal');
             hotspotProb = (latest['hotspot_probability'] ?? 0).toDouble();
             overloadProb = (latest['overload_probability'] ?? 0).toDouble();
             compositeRisk = (latest['composite_risk'] ?? 0).toDouble();
+            recommendedAction = (latest['recommended_action'] ?? 'System operating normally').toString();
           }
         });
       }
     } catch (e) {
-      print('Error fetching history: $e');
-      Future.delayed(const Duration(seconds: 2), () {
-        if (historyLog.isEmpty && mounted) _generateDemoData();
-      });
+      _startDemoData();
     }
-  }
-
-  Future<void> _refreshData() async {
-    await _fetchHistoricalData();
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Data refreshed'),
-          backgroundColor: Color(0xFF22C55E),
-          duration: Duration(seconds: 1),
-        ),
-      );
-    }
-  }
-
-  @override
-  void dispose() {
-    _channel?.unsubscribe();
-    _fallbackTimer?.cancel();
-    super.dispose();
   }
 
   Color getStatusColor() {
-    if (status == "Normal") return const Color(0xFF22C55E);
-    if (status == "Overload" || status == "Warning") return const Color(0xFFF59E0B);
-    return const Color(0xFFEF4444);
+    if (status == "Normal") return const Color(0xFF4ADE80);
+    if (status == "Warning") return const Color(0xFFFBBF24);
+    if (status == "Overload") return const Color(0xFFFB923C);
+    return const Color(0xFFF87171);
   }
 
   IconData getStatusIcon() {
     if (status == "Normal") return Icons.check_circle;
-    if (status == "Overload" || status == "Warning") return Icons.warning_amber;
+    if (status == "Warning") return Icons.warning_amber;
+    if (status == "Overload") return Icons.electric_bolt;
     return Icons.whatshot;
   }
 
-  String getRiskLevel() {
-    if (compositeRisk > 0.7) return "CRITICAL";
-    if (compositeRisk > 0.4) return "ELEVATED";
-    return "SAFE";
-  }
-
+  String getRiskLevel() => compositeRisk > 0.7 ? "CRITICAL" : compositeRisk > 0.4 ? "ELEVATED" : "SAFE";
   double getRiskPercentage() => compositeRisk * 100;
 
-  String getMitigationSuggestion() {
-    if (status == "Overheating") return "⚠️ Isolate circuit immediately!";
-    if (status == "Overload") return "⚠️ Reduce load by 15-20% immediately!";
-    if (status == "Warning") return "⚠️ Reduce load by 15-20%";
-    return "✅ System operating normally";
-  }
-
-  List<LineChartBarData> _getChartLines() {
-    List<LineChartBarData> lines = [];
-    
-    if (_selectedMetric == 'All' || _selectedMetric == 'Temperature') {
-      lines.add(LineChartBarData(
-        spots: tempSpots,
-        isCurved: true,
-        color: const Color(0xFF3B82F6),
-        barWidth: 2,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(show: false),
-      ));
-    }
-    
-    if (_selectedMetric == 'All' || _selectedMetric == 'Current') {
-      lines.add(LineChartBarData(
-        spots: currentSpots,
-        isCurved: true,
-        color: const Color(0xFF06B6D4),
-        barWidth: 2,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(show: false),
-      ));
-    }
-    
-    if (_selectedMetric == 'All' || _selectedMetric == 'Hotspot') {
-      lines.add(LineChartBarData(
-        spots: hotspotSpots,
-        isCurved: true,
-        color: const Color(0xFF8B5CF6),
-        barWidth: 2,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(show: false),
-      ));
-    }
-    
-    if (_selectedMetric == 'All' || _selectedMetric == 'Overload') {
-      lines.add(LineChartBarData(
-        spots: overloadSpots,
-        isCurved: true,
-        color: const Color(0xFFF59E0B),
-        barWidth: 2,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(show: false),
-      ));
-    }
-    
-    if (_selectedMetric == 'All' || _selectedMetric == 'Risk') {
-      lines.add(LineChartBarData(
-        spots: riskSpots,
-        isCurved: true,
-        color: const Color(0xFFEF4444),
-        barWidth: 2,
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(show: false),
-      ));
-    }
-    
-    return lines;
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final isMobile = MediaQuery.of(context).size.width < 800;
-    final screenHeight = MediaQuery.of(context).size.height;
-    final screenWidth = MediaQuery.of(context).size.width;
-    
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF0F172A), Color(0xFF1E1B4B)],
+            colors: [Color(0xFF0A0E27), Color(0xFF10152E)],
           ),
         ),
         child: SafeArea(
           child: Padding(
             padding: EdgeInsets.all(isMobile ? 8 : 16),
-            child: isMobile 
-                ? _buildMobileLayout(screenHeight)
-                : _buildDesktopLayout(screenHeight),
+            child: isMobile ? _buildMobileLayout() : _buildDesktopLayout(),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildMobileLayout(double screenHeight) {
-    return Column(
-      children: [
-        _buildHeader(true),
-        SizedBox(height: 8),
-        Expanded(
-          child: SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            child: Column(
+  Widget _buildMobileLayout() => Column(
+        children: [
+          _buildHeader(true),
+          const SizedBox(height: 8),
+          Expanded(
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              child: Column(
+                children: [
+                  _buildStatusCard(),
+                  const SizedBox(height: 8),
+                  _buildSensorRow(true),
+                  const SizedBox(height: 8),
+                  _buildRiskMeter(),
+                  const SizedBox(height: 8),
+                  _buildPredictions(true),
+                  const SizedBox(height: 8),
+                  _buildMitigation(),
+                  const SizedBox(height: 8),
+                  SizedBox(height: 280, child: _buildCombinedChart(true)),
+                  const SizedBox(height: 8),
+                  SizedBox(height: 320, child: _buildRecentEvents(true)),
+                ],
+              ),
+            ),
+          ),
+        ],
+      );
+
+  Widget _buildDesktopLayout() => Column(
+        children: [
+          _buildHeader(false),
+          const SizedBox(height: 12),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildStatusCard(),
-                SizedBox(height: 8),
-                _buildSensorRow(true),
-                SizedBox(height: 8),
-                _buildRiskMeter(),
-                SizedBox(height: 8),
-                _buildPredictions(true),
-                SizedBox(height: 8),
-                _buildMitigation(),
-                SizedBox(height: 8),
-                Container(
-                  height: screenHeight * 0.35,
-                  child: _buildCombinedChart(true),
+                Expanded(
+                  flex: 4,
+                  child: Column(
+                    children: [
+                      _buildStatusCard(),
+                      const SizedBox(height: 10),
+                      _buildSensorRow(false),
+                      const SizedBox(height: 10),
+                      Expanded(child: _buildCombinedChart(false)),
+                    ],
+                  ),
                 ),
-                SizedBox(height: 8),
-                Container(
-                  height: screenHeight * 0.4,
-                  child: _buildRecentEvents(true),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: Column(
+                    children: [
+                      _buildRiskMeter(),
+                      const SizedBox(height: 10),
+                      _buildPredictions(false),
+                      const SizedBox(height: 10),
+                      _buildMitigation(),
+                      const SizedBox(height: 10),
+                      Expanded(child: _buildRecentEvents(false)),
+                    ],
+                  ),
                 ),
               ],
             ),
           ),
-        ),
-      ],
-    );
-  }
+        ],
+      );
 
-  Widget _buildDesktopLayout(double screenHeight) {
-    return Column(
-      children: [
-        _buildHeader(false),
-        SizedBox(height: 12),
-        Expanded(
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                flex: 4,
-                child: Column(
-                  children: [
-                    _buildStatusCard(),
-                    SizedBox(height: 10),
-                    _buildSensorRow(false),
-                    SizedBox(height: 10),
-                    Expanded(
-                      child: _buildCombinedChart(false),
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(width: 12),
-              Expanded(
-                flex: 2,
-                child: Column(
-                  children: [
-                    _buildRiskMeter(),
-                    SizedBox(height: 10),
-                    _buildPredictions(false),
-                    SizedBox(height: 10),
-                    _buildMitigation(),
-                    SizedBox(height: 10),
-                    Expanded(
-                      child: _buildRecentEvents(false),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+  // Enhanced Electric Logo with animated glow effect
+  Widget _buildElectricLogo({required bool isMobile}) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF5E9BFF), Color(0xFF00D2FF)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-      ],
+        borderRadius: BorderRadius.circular(isMobile ? 14 : 18),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF5E9BFF).withOpacity(0.4),
+            blurRadius: 12,
+            spreadRadius: 1,
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(isMobile ? 8 : 12),
+        child: Icon(
+          Icons.flash_on_rounded,
+          color: Colors.white,
+          size: isMobile ? 24 : 32,
+        ),
+      ),
     );
   }
 
@@ -574,44 +415,39 @@ class _DashboardState extends State<Dashboard> {
     return Container(
       padding: EdgeInsets.all(isMobile ? 12 : 16),
       decoration: BoxDecoration(
-        gradient: const LinearGradient(
-          colors: [Color(0xFF0EA5E9), Color(0xFF7C3AED)],
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFF1E3A5F).withOpacity(0.95),
+            const Color(0xFF0F172A).withOpacity(0.98),
+          ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(isMobile ? 16 : 20),
         boxShadow: [
           BoxShadow(
-            color: const Color(0xFF0EA5E9).withOpacity(0.3),
-            blurRadius: 15,
-            offset: const Offset(0, 5),
+            color: const Color(0xFF5E9BFF).withOpacity(0.15),
+            blurRadius: 20,
+            offset: const Offset(0, 8),
           ),
         ],
+        border: Border.all(
+          color: const Color(0xFF5E9BFF).withOpacity(0.2),
+        ),
       ),
-      child: isMobile 
+      child: isMobile
           ? Column(
               children: [
                 Row(
                   children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.2),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(
-                        Icons.electrical_services,
-                        color: Colors.white,
-                        size: 24,
-                      ),
-                    ),
-                    SizedBox(width: 10),
+                    _buildElectricLogo(isMobile: true),
+                    const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           const Text(
-                            "Beyond The Breaker",
+                            "Beyond The Bre4ker",
                             style: TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
@@ -619,24 +455,32 @@ class _DashboardState extends State<Dashboard> {
                               letterSpacing: 0.5,
                             ),
                           ),
-                          SizedBox(height: 4),
+                          const SizedBox(height: 4),
                           Row(
                             children: [
-                              Container(
+                              AnimatedContainer(
+                                duration: const Duration(milliseconds: 500),
                                 width: 8,
                                 height: 8,
                                 decoration: BoxDecoration(
-                                  color: isConnected ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+                                  color: isConnected ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24),
                                   shape: BoxShape.circle,
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: (isConnected ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24)).withOpacity(0.5),
+                                      blurRadius: 4,
+                                    ),
+                                  ],
                                 ),
                               ),
-                              SizedBox(width: 6),
+                              const SizedBox(width: 6),
                               Text(
                                 isConnected ? "LIVE" : "DEMO",
                                 style: TextStyle(
                                   fontSize: 10,
                                   fontWeight: FontWeight.w600,
                                   color: Colors.white.withOpacity(0.9),
+                                  letterSpacing: 0.5,
                                 ),
                               ),
                             ],
@@ -646,46 +490,12 @@ class _DashboardState extends State<Dashboard> {
                     ),
                   ],
                 ),
-                SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.refresh, color: Colors.white, size: 14),
-                      SizedBox(width: 4),
-                      Text(
-                        DateFormat('HH:mm:ss').format(DateTime.now()),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 11,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
             )
           : Row(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(16),
-                  ),
-                  child: const Icon(
-                    Icons.electrical_services,
-                    color: Colors.white,
-                    size: 28,
-                  ),
-                ),
-                SizedBox(width: 16),
+                _buildElectricLogo(isMobile: false),
+                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -699,18 +509,25 @@ class _DashboardState extends State<Dashboard> {
                           letterSpacing: 1,
                         ),
                       ),
-                      SizedBox(height: 6),
+                      const SizedBox(height: 6),
                       Row(
                         children: [
-                          Container(
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 500),
                             width: 10,
                             height: 10,
                             decoration: BoxDecoration(
-                              color: isConnected ? const Color(0xFF22C55E) : const Color(0xFFEF4444),
+                              color: isConnected ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24),
                               shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: (isConnected ? const Color(0xFF4ADE80) : const Color(0xFFFBBF24)).withOpacity(0.5),
+                                  blurRadius: 6,
+                                ),
+                              ],
                             ),
                           ),
-                          SizedBox(width: 8),
+                          const SizedBox(width: 8),
                           Text(
                             isConnected ? "LIVE DATA STREAM" : "DEMO MODE",
                             style: TextStyle(
@@ -725,27 +542,6 @@ class _DashboardState extends State<Dashboard> {
                     ],
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(30),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.refresh, color: Colors.white, size: 16),
-                      SizedBox(width: 6),
-                      Text(
-                        DateFormat('HH:mm:ss').format(DateTime.now()),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
               ],
             ),
     );
@@ -756,12 +552,22 @@ class _DashboardState extends State<Dashboard> {
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         gradient: LinearGradient(
+          colors: [
+            getStatusColor().withOpacity(0.15),
+            getStatusColor().withOpacity(0.03),
+          ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [getStatusColor().withOpacity(0.2), getStatusColor().withOpacity(0.05)],
         ),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: getStatusColor().withOpacity(0.3)),
+        boxShadow: [
+          BoxShadow(
+            color: getStatusColor().withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Row(
         children: [
@@ -774,11 +580,11 @@ class _DashboardState extends State<Dashboard> {
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w600,
-                    color: Colors.white.withOpacity(0.6),
-                    letterSpacing: 0.5,
+                    color: Colors.white.withOpacity(0.5),
+                    letterSpacing: 0.8,
                   ),
                 ),
-                SizedBox(height: 6),
+                const SizedBox(height: 6),
                 Text(
                   status.toUpperCase(),
                   style: TextStyle(
@@ -788,12 +594,14 @@ class _DashboardState extends State<Dashboard> {
                     letterSpacing: 0.5,
                   ),
                 ),
-                SizedBox(height: 6),
+                const SizedBox(height: 6),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: getStatusColor().withOpacity(0.2),
-                    borderRadius: BorderRadius.circular(10),
+                    gradient: LinearGradient(
+                      colors: [getStatusColor().withOpacity(0.2), getStatusColor().withOpacity(0.1)],
+                    ),
+                    borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
                     getRiskLevel(),
@@ -810,59 +618,45 @@ class _DashboardState extends State<Dashboard> {
           Container(
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: getStatusColor().withOpacity(0.1),
+              gradient: LinearGradient(
+                colors: [getStatusColor().withOpacity(0.2), getStatusColor().withOpacity(0.05)],
+              ),
               shape: BoxShape.circle,
             ),
-            child: Icon(
-              getStatusIcon(),
-              size: 36,
-              color: getStatusColor(),
-            ),
+            child: Icon(getStatusIcon(), size: 36, color: getStatusColor()),
           ),
         ],
       ),
     );
   }
 
-  Widget _buildSensorRow(bool isMobile) {
-    return Row(
-      children: [
-        Expanded(
-          child: _buildSensorCard(
-            "TEMP",
-            temperature.toStringAsFixed(1),
-            "°C",
-            Icons.thermostat,
-            const Color(0xFF3B82F6),
-            temperature,
-            100,
-          ),
-        ),
-        SizedBox(width: isMobile ? 8 : 12),
-        Expanded(
-          child: _buildSensorCard(
-            "CURRENT",
-            current.toStringAsFixed(1),
-            "A",
-            Icons.electric_bolt,
-            const Color(0xFF06B6D4),
-            current,
-            100,
-          ),
-        ),
-      ],
-    );
-  }
+  Widget _buildSensorRow(bool isMobile) => Row(
+        children: [
+          Expanded(child: _buildSensorCard("TEMP", temperature.toStringAsFixed(1), "°C", Icons.thermostat, const Color(0xFF5E9BFF), temperature, 100)),
+          SizedBox(width: isMobile ? 8 : 12),
+          Expanded(child: _buildSensorCard("CURRENT", current.toStringAsFixed(1), "A", Icons.electric_bolt, const Color(0xFF2DD4BF), current, 100)),
+        ],
+      );
 
   Widget _buildSensorCard(String title, String value, String unit, IconData icon, Color color, double currentValue, double maxValue) {
     double progress = (currentValue / maxValue).clamp(0, 1);
-    
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: color.withOpacity(0.3)),
+        gradient: LinearGradient(
+          colors: [const Color(0xFF11162E), const Color(0xFF0D1228)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: color.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -870,53 +664,33 @@ class _DashboardState extends State<Dashboard> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white.withOpacity(0.6),
-                ),
-              ),
+              Text(title, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.5))),
               Container(
                 padding: const EdgeInsets.all(6),
                 decoration: BoxDecoration(
-                  color: color.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
+                  gradient: LinearGradient(colors: [color.withOpacity(0.2), color.withOpacity(0.05)]),
+                  borderRadius: BorderRadius.circular(10),
                 ),
                 child: Icon(icon, color: color, size: 14),
               ),
             ],
           ),
-          SizedBox(height: 8),
+          const SizedBox(height: 8),
           RichText(
-            text: TextSpan(
-              children: [
-                TextSpan(
-                  text: value,
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.bold,
-                    color: color,
-                  ),
-                ),
-                TextSpan(
-                  text: unit,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Colors.white.withOpacity(0.5),
-                  ),
-                ),
-              ],
-            ),
+            text: TextSpan(children: [
+              TextSpan(text: value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
+              TextSpan(text: unit, style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.4))),
+            ]),
           ),
-          SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: progress,
-            backgroundColor: Colors.white.withOpacity(0.1),
-            valueColor: AlwaysStoppedAnimation(color),
-            minHeight: 3,
-            borderRadius: BorderRadius.circular(2),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress,
+              backgroundColor: Colors.white.withOpacity(0.08),
+              valueColor: AlwaysStoppedAnimation(color),
+              minHeight: 4,
+            ),
           ),
         ],
       ),
@@ -927,9 +701,20 @@ class _DashboardState extends State<Dashboard> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
+        gradient: LinearGradient(
+          colors: [const Color(0xFF11162E), const Color(0xFF0D1228)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -937,221 +722,161 @@ class _DashboardState extends State<Dashboard> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Row(
-                children: [
-                  Icon(Icons.timeline, size: 14, color: Colors.white.withOpacity(0.7)),
-                  SizedBox(width: 4),
-                  Text(
-                    "METRICS TREND",
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white.withOpacity(0.7),
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ],
-              ),
+              Row(children: [
+                Icon(Icons.timeline, size: 14, color: Colors.white.withOpacity(0.5)),
+                const SizedBox(width: 4),
+                Text("METRICS TREND", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.5), letterSpacing: 0.5)),
+              ]),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: Colors.white.withOpacity(0.05),
                   borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: const Color(0xFF5E9BFF).withOpacity(0.2)),
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
                     value: _selectedMetric,
-                    dropdownColor: const Color(0xFF1E293B),
-                    style: const TextStyle(fontSize: 10, color: Colors.white),
-                    icon: Icon(Icons.arrow_drop_down, color: Colors.white.withOpacity(0.7), size: 16),
-                    items: metrics.map((String value) {
-                      return DropdownMenuItem<String>(
-                        value: value,
-                        child: Text(value),
-                      );
-                    }).toList(),
-                    onChanged: (String? newValue) {
-                      setState(() {
-                        _selectedMetric = newValue!;
-                      });
-                    },
+                    dropdownColor: const Color(0xFF1E1F3A),
+                    style: const TextStyle(fontSize: 10, color: Color(0xFF7CB9E8)),
+                    icon: Icon(Icons.arrow_drop_down, color: Colors.white.withOpacity(0.5), size: 16),
+                    items: metrics.map((String value) => DropdownMenuItem(value: value, child: Text(value))).toList(),
+                    onChanged: (String? newValue) => setState(() => _selectedMetric = newValue!),
                   ),
                 ),
               ),
             ],
           ),
-          SizedBox(height: 10),
+          const SizedBox(height: 10),
           Expanded(
             child: tempSpots.isEmpty
-                ? Center(child: Text("Waiting for data...", style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 11)))
-                : LineChart(
-                    LineChartData(
-                      gridData: FlGridData(
-                        show: true,
-                        drawVerticalLine: true,
-                        getDrawingHorizontalLine: (value) {
-                          return FlLine(
-                            color: Colors.white.withOpacity(0.1),
-                            strokeWidth: 1,
-                          );
-                        },
-                        getDrawingVerticalLine: (value) {
-                          return FlLine(
-                            color: Colors.white.withOpacity(0.1),
-                            strokeWidth: 1,
-                          );
-                        },
-                      ),
-                      titlesData: FlTitlesData(
-                        show: true,
-                        bottomTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            reservedSize: 22,
-                            getTitlesWidget: (value, meta) {
-                              if (value.toInt() % 5 == 0 && value >= 0 && value < dataPointIndex) {
-                                return Padding(
+                ? Center(child: Text("Waiting for data...", style: TextStyle(color: Colors.white.withOpacity(0.3), fontSize: 11)))
+                : LineChart(LineChartData(
+                    gridData: FlGridData(
+                      show: true,
+                      drawVerticalLine: true,
+                      getDrawingHorizontalLine: (value) => FlLine(color: Colors.white.withOpacity(0.05), strokeWidth: 1),
+                      getDrawingVerticalLine: (value) => FlLine(color: Colors.white.withOpacity(0.05), strokeWidth: 1),
+                    ),
+                    titlesData: FlTitlesData(
+                      show: true,
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 22,
+                          getTitlesWidget: (value, meta) => value.toInt() % 5 == 0 && value >= 0 && value < dataPointIndex
+                              ? Padding(
                                   padding: const EdgeInsets.only(top: 6),
-                                  child: Text(
-                                    value.toInt().toString(),
-                                    style: const TextStyle(fontSize: 9, color: Colors.white54),
-                                  ),
-                                );
-                              }
-                              return const SizedBox();
-                            },
-                          ),
+                                  child: Text(value.toInt().toString(), style: const TextStyle(fontSize: 9, color: Colors.white38)),
+                                )
+                              : const SizedBox(),
                         ),
-                        leftTitles: AxisTitles(
-                          sideTitles: SideTitles(
-                            showTitles: true,
-                            reservedSize: 32,
-                            getTitlesWidget: (value, meta) {
-                              return Text(
-                                "${(value * 100).toInt()}%",
-                                style: const TextStyle(fontSize: 9, color: Colors.white54),
-                              );
-                            },
-                          ),
-                        ),
-                        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                       ),
-                      borderData: FlBorderData(
-                        show: true,
-                        border: Border.all(color: Colors.white.withOpacity(0.1)),
-                      ),
-                      minX: 0,
-                      maxX: dataPointIndex > 0 ? dataPointIndex.toDouble() : 10,
-                      minY: 0,
-                      maxY: 1,
-                      lineBarsData: _getChartLines(),
-                      lineTouchData: LineTouchData(
-                        touchTooltipData: LineTouchTooltipData(
-                          getTooltipItems: (touchedSpots) {
-                            return touchedSpots.map((spot) {
-                              String label = '';
-                              if (spot.barIndex == 0) label = 'Temp: ${(spot.y * 100).toInt()}°C';
-                              else if (spot.barIndex == 1) label = 'Current: ${(spot.y * 100).toInt()}A';
-                              else if (spot.barIndex == 2) label = 'Hotspot: ${(spot.y * 100).toInt()}%';
-                              else if (spot.barIndex == 3) label = 'Overload: ${(spot.y * 100).toInt()}%';
-                              else if (spot.barIndex == 4) label = 'Risk: ${(spot.y * 100).toInt()}%';
-                              
-                              return LineTooltipItem(
-                                label,
-                                const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
-                              );
-                            }).toList();
-                          },
-                          tooltipBgColor: const Color(0xFF0F172A),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 32,
+                          getTitlesWidget: (value, meta) => Text("${(value * 100).toInt()}%", style: const TextStyle(fontSize: 9, color: Colors.white38)),
                         ),
+                      ),
+                      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    ),
+                    borderData: FlBorderData(show: true, border: Border.all(color: Colors.white.withOpacity(0.05))),
+                    minX: 0,
+                    maxX: dataPointIndex > 0 ? dataPointIndex.toDouble() : 10,
+                    minY: 0,
+                    maxY: 1,
+                    lineBarsData: _getChartLines(),
+                    lineTouchData: LineTouchData(
+                      touchTooltipData: LineTouchTooltipData(
+                        tooltipBgColor: const Color(0xFF0A0E27),
+                        getTooltipItems: (touchedSpots) {
+                          return touchedSpots.map((spot) {
+                            String label = '';
+                            if (spot.barIndex == 0) label = 'Temp: ${(spot.y * 100).toInt()}°C';
+                            else if (spot.barIndex == 1) label = 'Current: ${(spot.y * 100).toInt()}A';
+                            else if (spot.barIndex == 2) label = 'Hotspot: ${(spot.y * 100).toInt()}%';
+                            else if (spot.barIndex == 3) label = 'Overload: ${(spot.y * 100).toInt()}%';
+                            else if (spot.barIndex == 4) label = 'Risk: ${(spot.y * 100).toInt()}%';
+                            
+                            return LineTooltipItem(
+                              label,
+                              const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            );
+                          }).toList();
+                        },
                       ),
                     ),
-                  ),
+                  )),
           ),
-          SizedBox(height: 8),
-          Wrap(
-            spacing: 10,
-            runSpacing: 4,
-            alignment: WrapAlignment.center,
-            children: [
-              _buildLegend("Temp", const Color(0xFF3B82F6)),
-              _buildLegend("Current", const Color(0xFF06B6D4)),
-              _buildLegend("Hotspot", const Color(0xFF8B5CF6)),
-              _buildLegend("Overload", const Color(0xFFF59E0B)),
-              _buildLegend("Risk", const Color(0xFFEF4444)),
-            ],
-          ),
+          const SizedBox(height: 8),
+          Wrap(spacing: 10, runSpacing: 4, alignment: WrapAlignment.center, children: [
+            _buildLegend("Temp", const Color(0xFF5E9BFF)),
+            _buildLegend("Current", const Color(0xFF2DD4BF)),
+            _buildLegend("Hotspot", const Color(0xFFA78BFA)),
+            _buildLegend("Overload", const Color(0xFFFBBF24)),
+            _buildLegend("Risk", const Color(0xFFF87171)),
+          ]),
         ],
       ),
     );
   }
 
-  Widget _buildLegend(String label, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
+  List<LineChartBarData> _getChartLines() {
+    List<LineChartBarData> lines = [];
+    if (_selectedMetric == 'All' || _selectedMetric == 'Temperature') lines.add(LineChartBarData(spots: tempSpots, isCurved: true, color: const Color(0xFF5E9BFF), barWidth: 2, dotData: const FlDotData(show: false), belowBarData: BarAreaData(show: false, color: const Color(0xFF5E9BFF).withOpacity(0.05))));
+    if (_selectedMetric == 'All' || _selectedMetric == 'Current') lines.add(LineChartBarData(spots: currentSpots, isCurved: true, color: const Color(0xFF2DD4BF), barWidth: 2, dotData: const FlDotData(show: false), belowBarData: BarAreaData(show: false, color: const Color(0xFF2DD4BF).withOpacity(0.05))));
+    if (_selectedMetric == 'All' || _selectedMetric == 'Hotspot') lines.add(LineChartBarData(spots: hotspotSpots, isCurved: true, color: const Color(0xFFA78BFA), barWidth: 2, dotData: const FlDotData(show: false), belowBarData: BarAreaData(show: false, color: const Color(0xFFA78BFA).withOpacity(0.05))));
+    if (_selectedMetric == 'All' || _selectedMetric == 'Overload') lines.add(LineChartBarData(spots: overloadSpots, isCurved: true, color: const Color(0xFFFBBF24), barWidth: 2, dotData: const FlDotData(show: false), belowBarData: BarAreaData(show: false, color: const Color(0xFFFBBF24).withOpacity(0.05))));
+    if (_selectedMetric == 'All' || _selectedMetric == 'Risk') lines.add(LineChartBarData(spots: riskSpots, isCurved: true, color: const Color(0xFFF87171), barWidth: 2, dotData: const FlDotData(show: false), belowBarData: BarAreaData(show: false, color: const Color(0xFFF87171).withOpacity(0.05))));
+    return lines;
+  }
+
+  Widget _buildLegend(String label, Color color) => Row(mainAxisSize: MainAxisSize.min, children: [
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
           width: 8,
           height: 8,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: color, shape: BoxShape.circle, boxShadow: [BoxShadow(color: color.withOpacity(0.4), blurRadius: 4)]),
         ),
-        SizedBox(width: 4),
-        Text(
-          label,
-          style: const TextStyle(fontSize: 9, color: Colors.white70),
-        ),
-      ],
-    );
-  }
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 9, color: Colors.white54)),
+      ]);
 
   Widget _buildRiskMeter() {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
+        gradient: LinearGradient(
+          colors: [const Color(0xFF11162E), const Color(0xFF0D1228)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.2),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            "RISK INDEX",
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: Colors.white.withOpacity(0.7),
-              letterSpacing: 0.5,
-            ),
-          ),
-          SizedBox(height: 8),
+          Text("RISK INDEX", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.5), letterSpacing: 0.5)),
+          const SizedBox(height: 8),
           Row(
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      "${getRiskPercentage().toInt()}%",
-                      style: TextStyle(
-                        fontSize: 32,
-                        fontWeight: FontWeight.bold,
-                        color: getStatusColor(),
-                      ),
-                    ),
-                    SizedBox(height: 4),
-                    Text(
-                      getRiskLevel(),
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: getStatusColor(),
-                      ),
-                    ),
+                    Text("${getRiskPercentage().toInt()}%", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold, color: getStatusColor())),
+                    const SizedBox(height: 4),
+                    Text(getRiskLevel(), style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: getStatusColor())),
                   ],
                 ),
               ),
@@ -1164,32 +889,23 @@ class _DashboardState extends State<Dashboard> {
                     CircularProgressIndicator(
                       value: getRiskPercentage() / 100,
                       strokeWidth: 6,
-                      backgroundColor: Colors.white.withOpacity(0.1),
+                      backgroundColor: Colors.white.withOpacity(0.08),
                       valueColor: AlwaysStoppedAnimation(getStatusColor()),
                     ),
-                    Text(
-                      "${getRiskPercentage().toInt()}%",
-                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                    ),
+                    Text("${getRiskPercentage().toInt()}%", style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                   ],
                 ),
               ),
             ],
           ),
-          SizedBox(height: 8),
-          Container(
-            height: 4,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(2),
-              gradient: const LinearGradient(
-                colors: [Color(0xFF22C55E), Color(0xFFF59E0B), Color(0xFFEF4444)],
-                stops: [0, 0.5, 1],
-              ),
-            ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
               value: getRiskPercentage() / 100,
-              backgroundColor: Colors.transparent,
+              backgroundColor: Colors.white.withOpacity(0.05),
               valueColor: const AlwaysStoppedAnimation(Colors.transparent),
+              minHeight: 4,
             ),
           ),
         ],
@@ -1197,71 +913,45 @@ class _DashboardState extends State<Dashboard> {
     );
   }
 
-  Widget _buildPredictions(bool isMobile) {
-    return Row(
-      children: [
-        Expanded(
-          child: _buildPredictionCard(
-            "HOTSPOT",
-            hotspotProb,
-            const Color(0xFF8B5CF6),
-            Icons.local_fire_department,
-          ),
-        ),
-        SizedBox(width: isMobile ? 8 : 12),
-        Expanded(
-          child: _buildPredictionCard(
-            "OVERLOAD",
-            overloadProb,
-            const Color(0xFFF59E0B),
-            Icons.electric_bolt,
-          ),
-        ),
-      ],
-    );
-  }
+  Widget _buildPredictions(bool isMobile) => Row(
+        children: [
+          Expanded(child: _buildPredictionCard("HOTSPOT", hotspotProb, const Color(0xFFA78BFA), Icons.local_fire_department)),
+          SizedBox(width: isMobile ? 8 : 12),
+          Expanded(child: _buildPredictionCard("OVERLOAD", overloadProb, const Color(0xFFFBBF24), Icons.electric_bolt)),
+        ],
+      );
 
   Widget _buildPredictionCard(String title, double value, Color color, IconData icon) {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
+        gradient: LinearGradient(
+          colors: [const Color(0xFF11162E), const Color(0xFF0D1228)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Icon(icon, size: 14, color: color),
-              SizedBox(width: 4),
-              Text(
-                title,
-                style: TextStyle(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white.withOpacity(0.7),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 8),
-          Text(
-            "${(value * 100).toInt()}%",
-            style: TextStyle(
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
-              color: color,
+          Row(children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 4),
+            Text(title, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.5))),
+          ]),
+          const SizedBox(height: 8),
+          Text("${(value * 100).toInt()}%", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: value,
+              backgroundColor: Colors.white.withOpacity(0.08),
+              valueColor: AlwaysStoppedAnimation(color),
+              minHeight: 4,
             ),
-          ),
-          SizedBox(height: 6),
-          LinearProgressIndicator(
-            value: value,
-            backgroundColor: Colors.white.withOpacity(0.1),
-            valueColor: AlwaysStoppedAnimation(color),
-            minHeight: 3,
-            borderRadius: BorderRadius.circular(2),
           ),
         ],
       ),
@@ -1270,35 +960,62 @@ class _DashboardState extends State<Dashboard> {
 
   Widget _buildMitigation() {
     return Container(
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [const Color(0xFF0EA5E9).withOpacity(0.15), const Color(0xFF7C3AED).withOpacity(0.15)],
+          colors: [
+            const Color(0xFF1E3A5F).withOpacity(0.25),
+            const Color(0xFF0F172A).withOpacity(0.8),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF0EA5E9).withOpacity(0.3)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(colors: [Color(0xFF0EA5E9), Color(0xFF7C3AED)]),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: const Icon(Icons.auto_awesome, color: Colors.white, size: 16),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF5E9BFF).withOpacity(0.2)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF5E9BFF).withOpacity(0.1),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
           ),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              getMitigationSuggestion(),
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w500,
-                color: Colors.white,
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(colors: [Color(0xFF1E3A5F), Color(0xFF0F172A)]),
+                borderRadius: BorderRadius.circular(10),
               ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+              child: const Icon(Icons.auto_awesome, color: Color(0xFF7CB9E8), size: 18),
+            ),
+            const SizedBox(width: 10),
+            const Text("SMART RECOMMENDATION", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Color(0xFF7CB9E8), letterSpacing: 0.5)),
+          ]),
+          const SizedBox(height: 10),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.3),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withOpacity(0.05)),
+            ),
+            child: Row(
+              children: [
+                Icon(status == "Normal" ? Icons.check_circle_outline : Icons.warning_amber_rounded, color: getStatusColor(), size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    recommendedAction,
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.white, height: 1.3),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -1309,9 +1026,13 @@ class _DashboardState extends State<Dashboard> {
   Widget _buildRecentEvents(bool isMobile) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFF1E293B),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withOpacity(0.1)),
+        gradient: LinearGradient(
+          colors: [const Color(0xFF11162E), const Color(0xFF0D1228)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.05)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1320,159 +1041,36 @@ class _DashboardState extends State<Dashboard> {
             padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: Colors.black.withOpacity(0.3),
-              borderRadius: const BorderRadius.only(
-                topLeft: Radius.circular(14),
-                topRight: Radius.circular(14),
-              ),
-              border: Border(
-                bottom: BorderSide(color: Colors.white.withOpacity(0.1)),
-              ),
+              borderRadius: const BorderRadius.only(topLeft: Radius.circular(16), topRight: Radius.circular(16)),
+              border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
             ),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  children: [
-                    Icon(Icons.history, size: 14, color: Colors.white.withOpacity(0.7)),
-                    SizedBox(width: 6),
-                    Text(
-                      "RECENT EVENTS",
-                      style: TextStyle(
-                        fontSize: 10,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white.withOpacity(0.7),
-                        letterSpacing: 0.5,
-                      ),
-                    ),
-                  ],
-                ),
-                Row(
-                  children: [
-                    if (historyLog.isNotEmpty)
-                      GestureDetector(
-                        onTap: _viewFullHistory,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF0EA5E9).withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: const Color(0xFF0EA5E9).withOpacity(0.3)),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.list_alt, size: 10, color: Color(0xFF0EA5E9)),
-                              SizedBox(width: 3),
-                              Text("All", style: TextStyle(fontSize: 9, color: Color(0xFF0EA5E9), fontWeight: FontWeight.w600)),
-                            ],
-                          ),
-                        ),
-                      ),
-                    SizedBox(width: 6),
-                    if (historyLog.isNotEmpty)
-                      GestureDetector(
-                        onTap: _clearHistory,
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFEF4444).withOpacity(0.15),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: const Color(0xFFEF4444).withOpacity(0.3)),
-                          ),
-                          child: const Row(
-                            children: [
-                              Icon(Icons.delete_outline, size: 10, color: Color(0xFFEF4444)),
-                              SizedBox(width: 3),
-                              Text("Clear", style: TextStyle(fontSize: 9, color: Color(0xFFEF4444), fontWeight: FontWeight.w600)),
-                            ],
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+                Row(children: [
+                  Icon(Icons.history, size: 14, color: Colors.white.withOpacity(0.5)),
+                  const SizedBox(width: 6),
+                  Text("RECENT EVENTS", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.5), letterSpacing: 0.5)),
+                ]),
+                Row(children: [
+                  if (historyLog.isNotEmpty) _buildActionButton("All", Icons.list_alt, const Color(0xFF5E9BFF), () => _viewFullHistory()),
+                  const SizedBox(width: 6),
+                  if (historyLog.isNotEmpty) _buildActionButton("Clear", Icons.delete_outline, const Color(0xFFF87171), () => _clearHistory()),
+                ]),
               ],
             ),
           ),
           Expanded(
             child: historyLog.isEmpty
-                ? Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.history, size: 40, color: Colors.white.withOpacity(0.1)),
-                        SizedBox(height: 8),
-                        Text(
-                          "No history",
-                          style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.5)),
-                        ),
-                      ],
-                    ),
-                  )
+                ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(Icons.history, size: 40, color: Colors.white.withOpacity(0.05)),
+                    const SizedBox(height: 8),
+                    Text("No data yet", style: TextStyle(fontSize: 11, color: Colors.white.withOpacity(0.3))),
+                  ]))
                 : ListView.builder(
                     padding: const EdgeInsets.all(8),
                     itemCount: historyLog.length > 8 ? 8 : historyLog.length,
-                    itemBuilder: (context, index) {
-                      final entry = historyLog[index];
-                      final statusColor = entry.status == "Normal" 
-                          ? const Color(0xFF22C55E) 
-                          : (entry.status == "Overload" || entry.status == "Warning" 
-                              ? const Color(0xFFF59E0B) 
-                              : const Color(0xFFEF4444));
-                      
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 6),
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.black.withOpacity(0.2),
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: statusColor.withOpacity(0.2)),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(6),
-                              decoration: BoxDecoration(
-                                color: statusColor.withOpacity(0.15),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Icon(
-                                entry.status == "Normal" 
-                                    ? Icons.check_circle 
-                                    : (entry.status == "Overload" || entry.status == "Warning" 
-                                        ? Icons.warning_amber 
-                                        : Icons.whatshot),
-                                color: statusColor,
-                                size: 14,
-                              ),
-                            ),
-                            SizedBox(width: 8),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    entry.status.toUpperCase(),
-                                    style: TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.bold,
-                                      color: statusColor,
-                                    ),
-                                  ),
-                                  SizedBox(height: 2),
-                                  Text(
-                                    "${entry.temperature.toStringAsFixed(1)}°C • ${entry.current.toStringAsFixed(1)}A",
-                                    style: const TextStyle(fontSize: 8, color: Colors.white70),
-                                  ),
-                                ],
-                              ),
-                            ),
-                            Text(
-                              DateFormat('HH:mm').format(entry.timestamp),
-                              style: const TextStyle(fontSize: 9, color: Color(0xFF0EA5E9), fontWeight: FontWeight.w600),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
+                    itemBuilder: (context, index) => _buildEventItem(historyLog[index]),
                   ),
           ),
         ],
@@ -1480,9 +1078,53 @@ class _DashboardState extends State<Dashboard> {
     );
   }
 
+  Widget _buildActionButton(String label, IconData icon, Color color, VoidCallback onTap) => GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [color.withOpacity(0.15), color.withOpacity(0.05)],
+            ),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: color.withOpacity(0.3)),
+          ),
+          child: Row(children: [
+            Icon(icon, size: 10, color: color),
+            const SizedBox(width: 3),
+            Text(label, style: TextStyle(fontSize: 9, color: color, fontWeight: FontWeight.w600)),
+          ]),
+        ),
+      );
+
+  Widget _buildEventItem(HistoryEntry entry) {
+    final statusColor = entry.status == "Normal" ? const Color(0xFF4ADE80) : (entry.status == "Warning" ? const Color(0xFFFBBF24) : (entry.status == "Overload" ? const Color(0xFFFB923C) : const Color(0xFFF87171)));
+    return Container(
+      margin: const EdgeInsets.only(bottom: 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Colors.black.withOpacity(0.2),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: statusColor.withOpacity(0.15)),
+      ),
+      child: Row(children: [
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(color: statusColor.withOpacity(0.1), borderRadius: BorderRadius.circular(8)),
+          child: Icon(entry.status == "Normal" ? Icons.check_circle : (entry.status == "Warning" ? Icons.warning_amber : (entry.status == "Overload" ? Icons.electric_bolt : Icons.whatshot)), color: statusColor, size: 14),
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(entry.status.toUpperCase(), style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: statusColor)),
+          const SizedBox(height: 2),
+          Text("${entry.temperature.toStringAsFixed(1)}°C • ${entry.current.toStringAsFixed(1)}A", style: const TextStyle(fontSize: 8, color: Colors.white54)),
+        ])),
+        Text(DateFormat('HH:mm').format(entry.timestamp), style: const TextStyle(fontSize: 9, color: Color(0xFF7CB9E8), fontWeight: FontWeight.w600)),
+      ]),
+    );
+  }
+
   void _viewFullHistory() {
-    final isMobile = MediaQuery.of(context).size.width < 800;
-    
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1490,9 +1132,13 @@ class _DashboardState extends State<Dashboard> {
       builder: (context) => Container(
         height: MediaQuery.of(context).size.height * 0.85,
         decoration: BoxDecoration(
-          color: const Color(0xFF1E293B),
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-          border: Border.all(color: Colors.white.withOpacity(0.1)),
+          gradient: const LinearGradient(
+            colors: [Color(0xFF11162E), Color(0xFF0A0E27)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          border: Border.all(color: Colors.white.withOpacity(0.05)),
         ),
         child: Column(
           children: [
@@ -1500,35 +1146,18 @@ class _DashboardState extends State<Dashboard> {
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: Colors.black.withOpacity(0.3),
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(20),
-                  topRight: Radius.circular(20),
-                ),
-                border: Border(
-                  bottom: BorderSide(color: Colors.white.withOpacity(0.1)),
-                ),
+                borderRadius: const BorderRadius.only(topLeft: Radius.circular(24), topRight: Radius.circular(24)),
+                border: Border(bottom: BorderSide(color: Colors.white.withOpacity(0.05))),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      Icon(Icons.history, size: 20, color: const Color(0xFF0EA5E9)),
-                      SizedBox(width: 10),
-                      Text(
-                        "FULL HISTORY (${historyLog.length})",
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(context),
-                    icon: const Icon(Icons.close, color: Colors.white, size: 20),
-                  ),
+                  Row(children: [
+                    Icon(Icons.history, size: 20, color: const Color(0xFF5E9BFF)),
+                    const SizedBox(width: 10),
+                    Text("FULL HISTORY (${historyLog.length})", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                  ]),
+                  IconButton(onPressed: () => Navigator.pop(context), icon: const Icon(Icons.close, color: Colors.white, size: 20)),
                 ],
               ),
             ),
@@ -1538,19 +1167,14 @@ class _DashboardState extends State<Dashboard> {
                 itemCount: historyLog.length,
                 itemBuilder: (context, index) {
                   final entry = historyLog[index];
-                  final statusColor = entry.status == "Normal" 
-                      ? const Color(0xFF22C55E) 
-                      : (entry.status == "Overload" || entry.status == "Warning" 
-                          ? const Color(0xFFF59E0B) 
-                          : const Color(0xFFEF4444));
-                  
+                  final statusColor = entry.status == "Normal" ? const Color(0xFF4ADE80) : (entry.status == "Warning" ? const Color(0xFFFBBF24) : (entry.status == "Overload" ? const Color(0xFFFB923C) : const Color(0xFFF87171)));
                   return Container(
                     margin: const EdgeInsets.only(bottom: 10),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: Colors.black.withOpacity(0.2),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: statusColor.withOpacity(0.2)),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: statusColor.withOpacity(0.15)),
                     ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1558,67 +1182,46 @@ class _DashboardState extends State<Dashboard> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Row(
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: statusColor.withOpacity(0.15),
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  child: Icon(
-                                    entry.status == "Normal" 
-                                        ? Icons.check_circle 
-                                        : (entry.status == "Overload" || entry.status == "Warning" 
-                                            ? Icons.warning_amber 
-                                            : Icons.whatshot),
-                                    color: statusColor,
-                                    size: 20,
-                                  ),
-                                ),
-                                SizedBox(width: 10),
-                                Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      entry.status.toUpperCase(),
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: statusColor,
-                                      ),
-                                    ),
-                                    SizedBox(height: 2),
-                                    Text(
-                                      DateFormat('MMM dd, yyyy').format(entry.timestamp),
-                                      style: const TextStyle(fontSize: 10, color: Colors.white54),
-                                    ),
-                                  ],
-                                ),
-                              ],
-                            ),
-                            Text(
-                              DateFormat('HH:mm:ss').format(entry.timestamp),
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: Color(0xFF0EA5E9),
-                                fontWeight: FontWeight.w600,
+                            Row(children: [
+                              Container(
+                                padding: const EdgeInsets.all(8),
+                                decoration: BoxDecoration(color: statusColor.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+                                child: Icon(entry.status == "Normal" ? Icons.check_circle : (entry.status == "Warning" ? Icons.warning_amber : (entry.status == "Overload" ? Icons.electric_bolt : Icons.whatshot)), color: statusColor, size: 20),
                               ),
+                              const SizedBox(width: 10),
+                              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(entry.status.toUpperCase(), style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: statusColor)),
+                                const SizedBox(height: 2),
+                                Text(DateFormat('MMM dd, yyyy').format(entry.timestamp), style: const TextStyle(fontSize: 10, color: Colors.white54)),
+                              ]),
+                            ]),
+                            Text(DateFormat('HH:mm:ss').format(entry.timestamp), style: const TextStyle(fontSize: 12, color: Color(0xFF7CB9E8), fontWeight: FontWeight.w600)),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(spacing: 8, runSpacing: 8, children: [
+                          _buildDetailChip("Temp", "${entry.temperature.toStringAsFixed(1)}°C", const Color(0xFF5E9BFF)),
+                          _buildDetailChip("Current", "${entry.current.toStringAsFixed(1)}A", const Color(0xFF2DD4BF)),
+                          _buildDetailChip("Hotspot", "${(entry.hotspotProb * 100).toInt()}%", const Color(0xFFA78BFA)),
+                          _buildDetailChip("Overload", "${(entry.overloadProb * 100).toInt()}%", const Color(0xFFFBBF24)),
+                          _buildDetailChip("Risk", "${(entry.compositeRisk * 100).toInt()}%", const Color(0xFFF87171)),
+                        ]),
+                        if (entry.recommendedAction.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1E3A5F).withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: const Color(0xFF1E3A5F).withOpacity(0.3)),
                             ),
-                          ],
-                        ),
-                        SizedBox(height: 12),
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          children: [
-                            _buildDetailChip("Temp", "${entry.temperature.toStringAsFixed(1)}°C", const Color(0xFF3B82F6)),
-                            _buildDetailChip("Current", "${entry.current.toStringAsFixed(1)}A", const Color(0xFF06B6D4)),
-                            _buildDetailChip("Hotspot", "${(entry.hotspotProb * 100).toInt()}%", const Color(0xFF8B5CF6)),
-                            _buildDetailChip("Overload", "${(entry.overloadProb * 100).toInt()}%", const Color(0xFFF59E0B)),
-                            _buildDetailChip("Risk", "${(entry.compositeRisk * 100).toInt()}%", const Color(0xFFEF4444)),
-                          ],
-                        ),
+                            child: Row(children: [
+                              Icon(Icons.lightbulb, size: 12, color: const Color(0xFF7CB9E8)),
+                              const SizedBox(width: 6),
+                              Expanded(child: Text(entry.recommendedAction, style: const TextStyle(fontSize: 9, color: Colors.white70), maxLines: 2, overflow: TextOverflow.ellipsis)),
+                            ]),
+                          ),
+                        ],
                       ],
                     ),
                   );
@@ -1631,51 +1234,34 @@ class _DashboardState extends State<Dashboard> {
     );
   }
 
-  Widget _buildDetailChip(String label, String value, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: color.withOpacity(0.3)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 9,
-              fontWeight: FontWeight.w600,
-              color: Colors.white.withOpacity(0.6),
-            ),
+  Widget _buildDetailChip(String label, String value, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [color.withOpacity(0.15), color.withOpacity(0.05)],
           ),
-          SizedBox(width: 4),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.bold,
-              color: color,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Text(label, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: Colors.white.withOpacity(0.5))),
+          const SizedBox(width: 4),
+          Text(value, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color)),
+        ]),
+      );
 
   void _clearHistory() {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF1E293B),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text("Clear History", style: TextStyle(color: Colors.white, fontSize: 16)),
-        content: const Text("Clear all history logs?", style: TextStyle(color: Colors.white, fontSize: 13)),
+        backgroundColor: const Color(0xFF11162E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text("Clear History", style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        content: const Text("Are you sure you want to clear all history logs?", style: TextStyle(color: Colors.white, fontSize: 13)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text("Cancel", style: TextStyle(color: Colors.white.withOpacity(0.7), fontSize: 12)),
+            child: Text("Cancel", style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12)),
           ),
           TextButton(
             onPressed: () {
@@ -1690,7 +1276,7 @@ class _DashboardState extends State<Dashboard> {
               });
               Navigator.pop(context);
             },
-            child: const Text("Clear", style: TextStyle(color: Color(0xFFEF4444), fontSize: 12)),
+            child: const Text("Clear", style: TextStyle(color: Color(0xFFF87171), fontSize: 12)),
           ),
         ],
       ),
